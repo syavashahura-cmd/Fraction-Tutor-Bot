@@ -8,7 +8,8 @@ import google.generativeai as genai
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-# --- اصلاح خطای املایی: basicBasic به basicConfig اصلاح شد ---
+# --- تنظیمات لاگ‌گیری (Logging) ---
+# اصلاح خطای املایی: basicBasic به basicConfig تغییر یافت.
 logging.basicConfig(level=logging.INFO)
 
 # --- متغیرهای محیطی ---
@@ -22,7 +23,6 @@ model = None
 if GEMINI_API_KEY:
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        # استفاده از مدل سریع‌تر Flash
         model = genai.GenerativeModel("gemini-1.5-flash")
         logging.info("Gemini Model configured successfully.")
     except Exception as e:
@@ -33,7 +33,7 @@ r = None
 if REDIS_URL:
     try:
         r = redis.from_url(REDIS_URL, decode_responses=True)
-        r.ping() # تست اتصال
+        r.ping() 
         logging.info("Successfully connected to Redis.")
     except Exception as e:
         logging.warning(f"Could not connect to Redis: {e}")
@@ -56,7 +56,6 @@ def save(uid, d):
             logging.error(f"Failed to save data to Redis for user {uid}: {e}")
 
 # --- داده‌های ثابت ---
-# زبان‌ها
 LANGS = {"en":"English 🇺🇸","es":"Español 🇪🇸","fr":"Français 🇫🇷","ar":"العربية 🇸🇦","hi":"हिन्दी 🇮🇳","fa":"فارسی 🇮🇷"}
 OPS = {
     "en": ["➕ Add", "➖ Subtract", "✖️ Multiply", "➗ Divide"],
@@ -76,7 +75,7 @@ TEXT = {
     "explain": {"en":"📚 Smart explanation:", "fa":"📚 توضیح هوشمند:"},
 }
 
-# --- توابع اصلی ---
+# --- توابع محاسباتی ---
 def problem(op):
     n1,n2 = random.randint(1,15),random.randint(1,15)
     d1,d2 = random.randint(2,12),random.randint(2,12)
@@ -97,7 +96,7 @@ def norm(a):
     try: return str(sympy.Rational(a))
     except: return a.strip()
 
-# --- Handlers ---
+# --- Command Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = []
     codes = list(LANGS.keys())
@@ -131,6 +130,7 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = f"{prob_txt} = ?\n\n{left} {TEXT['left'].get(data['lang'], TEXT['left']['en'])}\n\nWrite answer (e.g. 5/6, 1 1/2, 2.5)"
     await q.edit_message_text(msg)
 
+# --- Message Handler ---
 async def msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     ans = update.message.text
@@ -139,6 +139,7 @@ async def msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     exp = data.get("exp")
 
     if not exp:
+        # اگر کاربر قبل از انتخاب عملیات پیام فرستاد
         await update.message.reply_text(TEXT["op"].get(lang, TEXT["op"]["en"]) + " " + (TEXT["op"].get(lang, TEXT["op"]["en"]) if lang!="fa" else "را انتخاب کنید!") )
         return
 
@@ -151,10 +152,10 @@ async def msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 logging.info(f"Requesting brief explanation for: {data['prob']}")
                 
-                # --- اعمال راهکار ۱: محدود کردن تعداد توکن‌ها برای سرعت بیشتر ---
+                # --- بهینه‌سازی سرعت: محدود کردن تعداد توکن‌ها (Max Output Tokens) ---
                 explanation = model.generate_content(
-                    f"Provide a brief, single-paragraph explanation in {lang} for the math problem: {data['prob']}\nCorrect Answer: {exp}",
-                    config={"max_output_tokens": 100} # محدودیت ۱۰۰ توکن برای کاهش Latency
+                    f"Provide a very brief, single-paragraph explanation in {lang} for the math problem: {data['prob']}\nCorrect Answer: {exp}",
+                    config={"max_output_tokens": 100} 
                 ).text
                 
             except Exception as e:
@@ -165,7 +166,7 @@ async def msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
         fb = f"{TEXT['wrong'][lang]} **{exp}**\n\n{TEXT['explain'][lang]}\n{explanation}"
 
     data["c"] += 1 if norm(ans) == exp else 0
-    data["exp"] = None # پاک کردن انتظار پاسخ
+    data["exp"] = None
     save(uid, data)
 
     # نمایش دکمه‌های عملیات برای سوال بعدی
@@ -173,7 +174,12 @@ async def msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton(OPS[lang][0], callback_data="+"), InlineKeyboardButton(OPS[lang][1], callback_data="-")],
         [InlineKeyboardButton(OPS[lang][2], callback_data="*"), InlineKeyboardButton(OPS[lang][3], callback_data="/")]
     ]
-    await update.message.reply_text(fb + "\n\nChoose next:", reply_markup=InlineKeyboardMarkup(kb))
+    
+    # --- جداسازی پیام‌ها: پیام خطا و توضیح در پیام اول ---
+    await update.message.reply_text(fb, parse_mode="Markdown")
+    
+    # --- جداسازی پیام‌ها: منوی عملیات در پیام دوم ---
+    await update.message.reply_text("Choose next operation:", reply_markup=InlineKeyboardMarkup(kb))
 
 # --- اجرای بات ---
 if TOKEN is None:
