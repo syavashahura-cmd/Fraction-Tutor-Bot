@@ -9,7 +9,6 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 # --- تنظیمات لاگ‌گیری (Logging) ---
-# اصلاح خطای املایی: basicBasic به basicConfig تغییر یافت.
 logging.basicConfig(level=logging.INFO)
 
 # --- متغیرهای محیطی ---
@@ -139,7 +138,6 @@ async def msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     exp = data.get("exp")
 
     if not exp:
-        # اگر کاربر قبل از انتخاب عملیات پیام فرستاد
         await update.message.reply_text(TEXT["op"].get(lang, TEXT["op"]["en"]) + " " + (TEXT["op"].get(lang, TEXT["op"]["en"]) if lang!="fa" else "را انتخاب کنید!") )
         return
 
@@ -152,15 +150,17 @@ async def msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 logging.info(f"Requesting brief explanation for: {data['prob']}")
                 
-                # --- بهینه‌سازی سرعت: محدود کردن تعداد توکن‌ها (Max Output Tokens) ---
+                # --- بهینه‌سازی سرعت: محدود کردن تعداد توکن‌ها ---
                 explanation = model.generate_content(
                     f"Provide a very brief, single-paragraph explanation in {lang} for the math problem: {data['prob']}\nCorrect Answer: {exp}",
                     config={"max_output_tokens": 100} 
                 ).text
                 
             except Exception as e:
-                logging.error(f"Gemini API call failed for user {uid}: {e}")
-                explanation = "Error fetching explanation."
+                # --- اضافه کردن پیام خطای فنی به کاربر و لاگ‌ها ---
+                error_msg = f"Gemini API FAILED. Error: {e.__class__.__name__}. Check Render logs."
+                logging.error(f"Gemini API call failed for user {uid}: {error_msg}")
+                explanation = f"**{error_msg}**" # نمایش برجسته پیام خطا
                 
         # ساختار پیام خطا و توضیح
         fb = f"{TEXT['wrong'][lang]} **{exp}**\n\n{TEXT['explain'][lang]}\n{explanation}"
