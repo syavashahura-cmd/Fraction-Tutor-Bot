@@ -1,0 +1,12 @@
+# Operating System files
+.DS_Store
+
+# Python virtual environment
+venv/
+__pycache__/
+
+# Python build artifacts
+*.pyc
+
+# DATA FILE (Crucial: Prevents user scores from being public)
+user_data.json
