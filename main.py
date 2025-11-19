@@ -8,7 +8,7 @@ import google.generativeai as genai
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-# --- 1. رفع خطای املایی: basicBasic به basicConfig اصلاح شد ---
+# --- اصلاح خطای املایی: basicBasic به basicConfig اصلاح شد ---
 logging.basicConfig(level=logging.INFO)
 
 # --- متغیرهای محیطی ---
@@ -22,6 +22,7 @@ model = None
 if GEMINI_API_KEY:
     try:
         genai.configure(api_key=GEMINI_API_KEY)
+        # استفاده از مدل سریع‌تر Flash
         model = genai.GenerativeModel("gemini-1.5-flash")
         logging.info("Gemini Model configured successfully.")
     except Exception as e:
@@ -36,7 +37,7 @@ if REDIS_URL:
         logging.info("Successfully connected to Redis.")
     except Exception as e:
         logging.warning(f"Could not connect to Redis: {e}")
-        r = None # اطمینان از اینکه r در صورت عدم اتصال، None باشد
+        r = None 
 
 # --- توابع مدیریت داده ---
 def get(uid):
@@ -45,7 +46,6 @@ def get(uid):
             return json.loads(r.get(f"u:{uid}"))
         except json.JSONDecodeError:
             logging.error(f"Failed to decode JSON for user {uid}")
-            # بازگرداندن مقادیر پیش‌فرض در صورت خرابی داده‌ها
     return {"lang":"en","c":0,"t":0,"exp":None,"prob":""}
 
 def save(uid, d):
@@ -82,14 +82,13 @@ def problem(op):
     d1,d2 = random.randint(2,12),random.randint(2,12)
     f1,f2 = sympy.Rational(n1,d1), sympy.Rational(n2,d2)
     
-    # اطمینان از اینکه عملیات تقسیم و تفریق منطقی انجام شود
     if op=="+": res=f1+f2; txt=f"{f1} + {f2}"
     elif op=="-": 
-        if f1<f2: f1,f2 = f2,f1 # تفریق غیرمنفی
+        if f1<f2: f1,f2 = f2,f1
         res=f1-f2; txt=f"{f1} - {f2}"
     elif op=="*": res=f1*f2; txt=f"{f1} × {f2}"
     else: 
-        if f2 == 0: f2 = sympy.Rational(1, d2) # جلوگیری از تقسیم بر صفر (اگرچه در randint(2,12) بعید است)
+        if f2 == 0: f2 = sympy.Rational(1, d2)
         res=f1/f2; txt=f"{f1} ÷ {f2}"
     return txt, str(res)
 
@@ -147,13 +146,17 @@ async def msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if norm(ans) == exp:
         fb = TEXT["correct"][lang]
     else:
-        # اگر پاسخ غلط بود، بازخورد و درخواست توضیح را آماده کن
         explanation = "No explanation"
         if model:
             try:
-                # توجه: generate_content یک تابع همزمان است. اگر بات زیر فشار ترافیک قرار گرفت، باید این فراخوانی را ناهمزمان کرد.
-                logging.info(f"Requesting explanation for: {data['prob']}")
-                explanation = model.generate_content(f"Explain in {lang}: {data['prob']}\nAnswer: {exp}").text
+                logging.info(f"Requesting brief explanation for: {data['prob']}")
+                
+                # --- اعمال راهکار ۱: محدود کردن تعداد توکن‌ها برای سرعت بیشتر ---
+                explanation = model.generate_content(
+                    f"Provide a brief, single-paragraph explanation in {lang} for the math problem: {data['prob']}\nCorrect Answer: {exp}",
+                    config={"max_output_tokens": 100} # محدودیت ۱۰۰ توکن برای کاهش Latency
+                ).text
+                
             except Exception as e:
                 logging.error(f"Gemini API call failed for user {uid}: {e}")
                 explanation = "Error fetching explanation."
