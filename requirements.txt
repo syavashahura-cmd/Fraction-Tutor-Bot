@@ -2,3 +2,4 @@ python-telegram-bot
 sympy
 google-genai
 requests
+redis  # این خط باید وجود داشته باشد
