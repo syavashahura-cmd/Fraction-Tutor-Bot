@@ -1,9 +1,14 @@
-import random, sympy, json, os, logging, redis
+  import random
+import sympy
+import json
+import os
+import logging
+import redis
 import google.generativeai as genai
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-logging.basicConfig(level=logging.INFO)
+logging.basicBasic(level=logging.INFO)
 
 TOKEN = os.environ["BOT_TOKEN"]
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -42,12 +47,12 @@ OPS = {
 }
 
 TEXT = {
-    "lang": {"en":"Choose your language:", "fa":"زبان خود را انتخاب کنید:"},
+    "lang": {"en":"Choose language:", "fa":"زبان خود را انتخاب کنید:"},
     "op":   {"en":"Choose operation:", "fa":"عملیات را انتخاب کنید:"},
     "left": {"en":"free exercises left", "fa":"تمرین رایگان باقی‌مانده"},
-    "correct": {"en":"✅ درست بود!", "fa":"✅ عالی! درست بود!"},
-    "wrong":   {"en":"❌ اشتباه! جواب درست:", "fa":"❌ اشتباه! جواب درست:"},
-    "explain": {"en":"📚 توضیح:", "fa":"📚 توضیح هوشمند:"},
+    "correct": {"en":"✅ Correct!", "fa":"✅ عالی! درست بود!"},
+    "wrong":   {"en":"❌ Wrong! Correct answer:", "fa":"❌ اشتباه! جواب درست:"},
+    "explain": {"en":"📚 Smart explanation:", "fa":"📚 توضیح هوشمند:"},
 }
 
 def problem(op):
@@ -68,13 +73,12 @@ def norm(a):
     except: return a.strip()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # درست کردن کیبورد زبان‌ها
     keyboard = []
     codes = list(LANGS.keys())
     for i in range(0, len(codes), 3):
         row = [InlineKeyboardButton(LANGS[codes[j]], callback_data=f"lang_{codes[j]}") for j in range(i, min(i+3, len(codes)))]
         keyboard.append(row)
-    await update.message.reply_text("🌍 Choose your language / زبان خود را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text("🌍 Choose your language:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -90,7 +94,7 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton(OPS[lang][0], callback_data="+"), InlineKeyboardButton(OPS[lang][1], callback_data="-")],
             [InlineKeyboardButton(OPS[lang][2], callback_data="*"), InlineKeyboardButton(OPS[lang][3], callback_data="/")]
         ]
-        await q.edit_message_text(TEXT["op"][lang], reply_markup=InlineKeyboardMarkup(kb))
+        await q.edit_message_text(TEXT["op"].get(lang, TEXT["op"]["en"]), reply_markup=InlineKeyboardMarkup(kb))
         return
 
     # سوال جدید
@@ -98,7 +102,8 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data.update({"exp":answer, "prob":prob_txt, "t":data.get("t",0)+1})
     save(uid, data)
     left = max(0, 30 - data["t"])
-    await q.edit_message_text(f"{prob_txt} = ?\n\n{left} {TEXT['left'][data.get('lang','en')]}\n\nWrite answer (e.g. 5/6, 1 1/2, 2.5)")
+    msg = f"{prob_txt} = ?\n\n{left} {TEXT['left'].get(data['lang'], TEXT['left']['en'])}\n\nWrite answer (e.g. 5/6, 1 1/2, 2.5)"
+    await q.edit_message_text(msg)
 
 async def msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -108,27 +113,23 @@ async def msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     exp = data.get("exp")
 
     if not exp:
-        await update.message.reply_text("لطفاً ابتدا یک عملیات انتخاب کنید!")
+        await update.message.reply_text("Please choose an operation first!")
         return
 
-    data["exp"] = None  # حتماً پاکش کن
-    if norm(ans) == exp:
-        data["c"] = data.get("c",0) + 1
-        fb = TEXT["correct"][lang]
-    else:
-        expl = "توضیح در دسترس نیست" if not model else model.generate_content(f"Explain in {lang.upper() if lang=='fa' else lang} step-by-step: {data['prob']}\nAnswer: {exp}").text
-        fb = f"{TEXT['wrong'][lang]} **{exp}**\n\n{TEXT['explain'][lang]}\n{expl}"
+    fb = TEXT["correct"][lang] if norm(ans) == exp else f"{TEXT['wrong'][lang]} **{exp}**\n\n{TEXT['explain'][lang]}\n{model.generate_content(f"Explain in {lang}: {data['prob']}\nAnswer: {exp}").text if model else 'No explanation'}"
 
+    data["c"] += 1 if norm(ans) == exp else 0
+    data["exp"] = None
     save(uid, data)
+
     kb = [
         [InlineKeyboardButton(OPS[lang][0], callback_data="+"), InlineKeyboardButton(OPS[lang][1], callback_data="-")],
         [InlineKeyboardButton(OPS[lang][2], callback_data="*"), InlineKeyboardButton(OPS[lang][3], callback_data="/")]
     ]
-    await update.message.reply_text(fb + "\n\nسوال بعدی:", reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text(fb + "\n\nChoose next:", reply_markup=InlineKeyboardMarkup(kb))
 
-# اجرا
 app = Application.builder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(cb))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, msg))
-app.run_polling()
+app.run_polling()  
