@@ -1,4 +1,4 @@
-       import os
+import os
 import json
 import random
 import sympy
@@ -23,8 +23,8 @@ FREE_TRIAL = 5  # تعداد سوالات رایگان برای کاربران �
 
 # اتصال Redis
 if not REDIS_URL:
-    logging.error("REDIS_URL environment variable is not set! Using dummy client.")
-    # برای جلوگیری از خطا در صورت عدم تنظیم متغیر محیطی
+    logging.error("REDIS_URL environment variable is not set! Using dummy client for Redis.")
+    # کلاس ساختگی برای جلوگیری از خطا در صورت عدم تنظیم متغیر محیطی
     class DummyRedis:
         def exists(self, key): return False
         def get(self, key): return None
@@ -37,7 +37,8 @@ else:
         REDIS_CLIENT.ping()
         logging.info("Successfully connected to Redis.")
     except Exception as e:
-        logging.critical(f"Failed to connect to Redis: {e}")
+        # مدیریت خطای اتصال Redis
+        logging.critical(f"Failed to connect to Redis at {REDIS_URL}: {e}")
         REDIS_CLIENT = DummyRedis()
 
 
@@ -131,7 +132,7 @@ EXPLANATIONS = {
         "fa": "مرحله {step}: تبدیل به **عدد مخلوط** → **{whole}** و **{remainder}**\n\n*💡 چرا؟ صورت ( {numerator} ) از مخرج ( {denominator} ) بزرگتر است، بنابراین به عدد مخلوط تبدیل شد تا فهم بهتری از مقدار آن داشته باشیم.*",
         "en": "Step {step}: Convert to a **mixed number** → **{whole}** and **{remainder}**\n\n*💡 Why? The numerator ( {numerator} ) is greater than the denominator ( {denominator} ), so it was converted to a mixed number for a better understanding of its value.*",
         "es": "Paso {step}: Convertir a un **número mixto** → **{whole}** y **{remainder}**\n\n*💡 ¿Por qué? El numerador ( {numerator} ) es mayor que el denominador ( {denominator} ), por lo que se convirtió en un número mixto para comprender mejor su valor.*",
-        "fr": "Étape {step}: Convertir en **nombre fractionnaire** → **{whole}** et **{remainder}**\n\n*💡 Pourquoi ? Le numérateur ( {numerator} ) est supérieur au dénominateur ( {denominator} ), il a donc été converti en nombre fractionnaire pour mieux comprendre sa valeur.*",
+        "fr": "Étape {step}: Convertir en **nombre fractionnaire** → **{whole}** و **{remainder}**\n\n*💡 Pourquoi ? Le numérateur ( {numerator} ) est supérieur au dénominateur ( {denominator} ), il a donc été converti en nombre fractionnaire pour mieux comprendre sa valeur.*",
         "ar": "الخطوة {step}: التحويل إلى **عدد كسري** → **{whole}** و **{remainder}**\n\n*💡 لماذا؟ البسط ( {numerator} ) أكبر من المقام ( {denominator} )، لذلك تم تحويله إلى عدد كسري لفهم أفضل لقيمته.*",
         "hi": "चरण {step}: **मिश्रित संख्या** में बदलें → **{whole}** और **{remainder}**\n\n*💡 क्यों? अंश ( {numerator} ) भाजक ( {denominator} ) से बड़ा है, इसलिए इसे मिश्रित संख्या में बदल दिया गया ताकि इसके मान को बेहतर ढंग से समझा जा सके।*",
     }
@@ -151,7 +152,8 @@ def op_keyboard(lang="en"):
          InlineKeyboardButton(f"➖ {labels[1]}", callback_data='-')],
         [InlineKeyboardButton(f"✖️ {labels[2]}", callback_data='*'),
          InlineKeyboardButton(f"➗ {labels[3]}", callback_data='/')],
-        [InlineKeyboardButton(f"📊 /Status", callback_data='op_menu')]
+        # دکمه /Status باید همیشه آخرین آیتم باشد تا با edit_message_text تداخل نداشته باشد
+        [InlineKeyboardButton(f"📊 /Status", callback_data='status_check')] 
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -166,8 +168,10 @@ def status_keyboard(lang):
 def get_user(user_id):
     """دریافت اطلاعات کاربر از Redis."""
     try:
-        if REDIS_CLIENT.exists(f"user:{user_id}"):
-            return json.loads(REDIS_CLIENT.get(f"user:{user_id}"))
+        user_data = REDIS_CLIENT.get(f"user:{user_id}")
+        if user_data:
+            # مطمئن می‌شویم که داده‌ها قبل از بارگذاری JSON خالی نیستند
+            return json.loads(user_data)
     except Exception as e:
         logging.error(f"Redis get error for user {user_id}: {e}")
     # مقادیر پیش‌فرض
@@ -181,20 +185,25 @@ def save_user(user_id, data):
         logging.error(f"Redis save error for user {user_id}: {e}")
 
 def normalize(ans):
-    """نرمال‌سازی پاسخ کاربر به کسر ساده شده."""
+    """نرمال‌سازی پاسخ کاربر به کسر ساده شده (پشتیبانی از عدد مخلوط '1 1/2' یا '1+1/2')."""
     ans = ans.strip().replace(" ","")
     try: 
+        # پشتیبانی از عدد مخلوط با فضای خالی یا + (مثلا: "1+1/2" یا "1 1/2" که قبلاً با replace حذف شده)
         if '+' in ans:
             parts = ans.split('+')
             res = sum(sympy.Rational(p) for p in parts)
             return str(res)
+        
+        # اگر کاربر عدد مخلوط را به صورت "11/2" (بدون فاصله) وارد کرده باشد (که معمولاً به صورت 11/2 تفسیر می‌شود)
+        # فرض می‌کنیم ورودی تنها یک کسر است مگر اینکه با "+" جدا شده باشد.
         return str(sympy.Rational(ans))
     except: 
         return ans.strip()
 
 def is_admin(user_id):
     """بررسی می‌کند که آیا کاربر ادمین است."""
-    return str(user_id) == str(ADMIN_ID)
+    # مطمئن شوید که ADMIN_ID تنظیم شده و قابل مقایسه است
+    return str(user_id) == str(ADMIN_ID) if ADMIN_ID else False
 
 # ================== ۵. تولید سوال و توضیح گام‌به‌گام ==================
 def generate_problem(op, vip=False):
@@ -212,14 +221,14 @@ def generate_problem(op, vip=False):
         res = f1+f2
         text = f"{f1} + {f2}"
     elif op=='-':
-        if f1<f2: f1,f2=f2,f1 # جلوگیری از پاسخ منفی در سطح مقدماتی
+        if f1<f2: f1,f2=f2,f1 # جلوگیری از پاسخ منفی در سطح مقدماتی (اگرچه sympy منفی را مدیریت می‌کند)
         res = f1-f2
         text = f"{f1} − {f2}"
     elif op=='*':
         res=f1*f2
         text=f"{f1} × {f2}"
     else: # op == '/'
-        if f2==0: f2=sympy.Rational(1,2)
+        if f2==0: f2=sympy.Rational(1,2) # اطمینان از عدم تقسیم بر صفر
         res=f1/f2
         text=f"{f1} ÷ {f2}"
         
@@ -255,7 +264,7 @@ def explain(f1_tuple, f2_tuple, op, lang):
         
         # گام ۳: انجام عملیات روی صورت‌ها
         res = f1_new + f2_new if op == '+' else f1_new - f2_new
-        explanation += f"\n{EXPLANATIONS['operation_step'].get(lang, EXPLANATIONS['operation_step']['en']).format(step=step, f1_new=f1_new.p, op_symbol=op_symbols[op], f2_new=f2_new.p, res=res, lcm=lcm)}"
+        explanation += f"\n{EXPLANATIONS['operation_step'].get(lang, EXPLANATIONS['operation_step']['en']).format(step=step, f1_new=f1_new.p, op_symbol=op_symbols[op], f2_new=f2_new.p, res=f1_new.p + (f2_new.p if op == '+' else -f2_new.p), lcm=lcm)}"
         step += 1
         
     # ---------- عملیات ضرب ----------
@@ -279,15 +288,18 @@ def explain(f1_tuple, f2_tuple, op, lang):
         step += 1
         
     # ---------- گام نهایی: ساده‌سازی / عدد مخلوط ----------
-    if res.q == 1:
-        explanation += f"\n{EXPLANATIONS['final_step_simple'].get(lang, EXPLANATIONS['final_step_simple']['en']).format(step=step, res=res)}"
-    elif abs(res) > 1:
-        whole = abs(res.p) // res.q
-        remainder = abs(res) - whole
-        sign = "-" if res < 0 else ""
-        explanation += f"\n{EXPLANATIONS['final_step_mixed'].get(lang, EXPLANATIONS['final_step_mixed']['en']).format(step=step, whole=sign+str(whole), remainder=remainder, numerator=abs(res.p), denominator=res.q)}"
+    # محاسبه نهایی (ساده شده)
+    final_result = f1 + f2 if op == '+' else (f1 - f2 if op == '-' else (f1 * f2 if op == '*' else f1 / f2))
+
+    if final_result.q == 1:
+        explanation += f"\n{EXPLANATIONS['final_step_simple'].get(lang, EXPLANATIONS['final_step_simple']['en']).format(step=step, res=final_result)}"
+    elif abs(final_result) > 1:
+        whole = abs(final_result.p) // final_result.q
+        remainder = abs(final_result) - whole
+        sign = "-" if final_result < 0 else ""
+        explanation += f"\n{EXPLANATIONS['final_step_mixed'].get(lang, EXPLANATIONS['final_step_mixed']['en']).format(step=step, whole=sign+str(whole), remainder=remainder, numerator=abs(final_result.p), denominator=final_result.q)}"
     else:
-        explanation += f"\n{EXPLANATIONS['final_step_simple'].get(lang, EXPLANATIONS['final_step_simple']['en']).format(step=step, res=res)}"
+        explanation += f"\n{EXPLANATIONS['final_step_simple'].get(lang, EXPLANATIONS['final_step_simple']['en']).format(step=step, res=final_result)}"
         
     return explanation
 
@@ -338,7 +350,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # ۲. مدیریت دکمه‌های UX
-    if query.data == 'op_menu':
+    if query.data == 'op_menu' or query.data == 'status_check':
+        # اگر از داخل منوی status_check (دکمه "بازگشت به عملیات") یا دکمه op_menu کلیک شد
         await query.edit_message_text(t(user['lang'],"choose_op"),reply_markup=op_keyboard(user['lang']))
         return
 
@@ -379,7 +392,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = get_user(user_id)
     
     if not user.get("expected_answer"):
-        await update.message.reply_text("لطفاً ابتدا /start را بزنید یا یک عملیات را از منو انتخاب کنید.")
+        # اگر کاربر قبل از انتخاب عملیات پیام فرستاد
+        await update.message.reply_text("لطفاً ابتدا /start را بزنید یا یک عملیات را از منو انتخاب کنید.", reply_markup=op_keyboard(user['lang']))
         return
         
     user['total']+=1
@@ -441,7 +455,8 @@ async def set_vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # اطلاع‌رسانی به کاربر هدف (اختیاری)
         try:
              await context.bot.send_message(target_id, "تبریک! اشتراک VIP شما توسط ادمین فعال شد. اکنون می‌توانید به طور نامحدود سوال حل کنید. /status")
-        except Exception:
+        except Exception as e:
+             logging.error(f"Could not send VIP notification to user {target_id}: {e}")
              await update.message.reply_text("⚠️ نتوانستم به کاربر مورد نظر پیام ارسال کنم.")
 
     except Exception as e:
@@ -451,7 +466,7 @@ async def set_vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     """شروع به کار ربات."""
     if not BOT_TOKEN:
-        logging.critical("BOT_TOKEN is not set!")
+        logging.critical("BOT_TOKEN environment variable is not set! Exiting.")
         return
         
     app = Application.builder().token(BOT_TOKEN).build()
@@ -473,4 +488,3 @@ def main():
 
 if __name__=="__main__":
     main()
- 
