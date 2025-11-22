@@ -1,193 +1,233 @@
+import os
+import json
 import random
 import sympy
-import json
-import os
 import logging
 import redis
-import google.generativeai as genai
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-# --- تنظیمات لاگ‌گیری (Logging) ---
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# --- متغیرهای محیطی ---
-TOKEN = os.environ.get("BOT_TOKEN")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-TON_WALLET = os.environ.get("TON_WALLET_ADDRESS", "YOUR_WALLET")
+# ================== اتصال Redis ==================
 REDIS_URL = os.environ.get("REDIS_URL")
+REDIS_CLIENT = redis.from_url(REDIS_URL, decode_responses=True)
 
-# --- تنظیمات Gemini ---
-model = None
-if GEMINI_API_KEY:
-    try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        logging.info("Gemini Model configured successfully.")
-    except Exception as e:
-        logging.error(f"Failed to configure Gemini model: {e}")
+# ================== تنظیمات ==================
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+USDT_WALLET = os.environ.get("USDT_WALLET")
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME")
+FREE_TRIAL = 5  # تعداد سوالات رایگان برای کاربران عادی
 
-# --- تنظیمات Redis ---
-r = None
-if REDIS_URL:
-    try:
-        r = redis.from_url(REDIS_URL, decode_responses=True)
-        r.ping() 
-        logging.info("Successfully connected to Redis.")
-    except Exception as e:
-        logging.warning(f"Could not connect to Redis: {e}")
-        r = None 
-
-# --- توابع مدیریت داده ---
-def get(uid):
-    if r and r.exists(f"u:{uid}"):
-        try:
-            return json.loads(r.get(f"u:{uid}"))
-        except json.JSONDecodeError:
-            logging.error(f"Failed to decode JSON for user {uid}")
-    return {"lang":"en","c":0,"t":0,"exp":None,"prob":""}
-
-def save(uid, d):
-    if r:
-        try:
-            r.set(f"u:{uid}", json.dumps(d))
-        except Exception as e:
-            logging.error(f"Failed to save data to Redis for user {uid}: {e}")
-
-# --- داده‌های ثابت ---
-LANGS = {"en":"English 🇺🇸","es":"Español 🇪🇸","fr":"Français 🇫🇷","ar":"العربية 🇸🇦","hi":"हिन्दी 🇮🇳","fa":"فارسی 🇮🇷"}
-OPS = {
-    "en": ["➕ Add", "➖ Subtract", "✖️ Multiply", "➗ Divide"],
-    "fa": ["➕ جمع", "➖ تفریق", "✖️ ضرب", "➗ تقسیم"],
-    "es": ["➕ Sumar", "➖ Restar", "✖️ Multiplicar", "➗ Dividir"],
-    "fr": ["➕ Addition", "➖ Soustraction", "✖️ Multiplication", "➗ Division"],
-    "ar": ["➕ جمع", "➖ طرح", "✖️ ضرب", "➗ قسمة"],
-    "hi": ["➕ जोड़", "➖ घटाव", "✖️ गुणा", "➗ भाग"],
-}
+# ================== زبان‌ها ==================
+LANGUAGES = ["fa", "en", "es", "fr", "ar", "hi"]
 
 TEXT = {
-    "lang": {"en":"Choose language:", "fa":"زبان خود را انتخاب کنید:"},
-    "op":   {"en":"Choose operation:", "fa":"عملیات را انتخاب کنید:"},
-    "left": {"en":"free exercises left", "fa":"تمرین رایگان باقی‌مانده"},
-    "correct": {"en":"✅ Correct!", "fa":"✅ عالی! درست بود!"},
-    "wrong":    {"en":"❌ Wrong! Correct answer:", "fa":"❌ اشتباه! جواب درست:"},
-    "explain": {"en":"📚 Smart explanation:", "fa":"📚 توضیح هوشمند:"},
+    "welcome": {
+        "fa": "به ربات آموزش کسرها خوش آمدید! 👋",
+        "en": "Welcome to Fraction Learning Bot! 👋",
+    },
+    "choose_op": {
+        "fa": "یک عملیات را انتخاب کنید:",
+        "en": "Choose an operation:",
+    },
+    "trial_left": {
+        "fa": "سوال رایگان باقی‌مانده",
+        "en": "free questions left",
+    },
+    "trial_over": {
+        "fa": "سوالات رایگان تمام شد! لطفاً اشتراک بخرید.",
+        "en": "Free questions finished! Please buy subscription.",
+    },
+    "send_proof": {
+        "fa": f"پرداخت را به کیف پول زیر واریز کنید و اسکرین‌شات را به {ADMIN_USERNAME} بفرستید:\n{USDT_WALLET}",
+        "en": f"Send payment to {USDT_WALLET} and proof to {ADMIN_USERNAME}",
+    },
+    "correct": {
+        "fa": "✅ پاسخ درست است!",
+        "en": "✅ Correct answer!",
+    },
+    "wrong": {
+        "fa": "❌ پاسخ اشتباه است. جواب درست:",
+        "en": "❌ Wrong answer. Correct answer:",
+    },
+    "next_question": {
+        "fa": "سوال بعدی:",
+        "en": "Next question:",
+    }
 }
 
-# --- توابع محاسباتی ---
-def problem(op):
-    n1,n2 = random.randint(1,15),random.randint(1,15)
-    d1,d2 = random.randint(2,12),random.randint(2,12)
-    f1,f2 = sympy.Rational(n1,d1), sympy.Rational(n2,d2)
-    
-    if op=="+": res=f1+f2; txt=f"{f1} + {f2}"
-    elif op=="-": 
-        if f1<f2: f1,f2 = f2,f1
-        res=f1-f2; txt=f"{f1} - {f2}"
-    elif op=="*": res=f1*f2; txt=f"{f1} × {f2}"
-    else: 
-        if f2 == 0: f2 = sympy.Rational(1, d2)
-        res=f1/f2; txt=f"{f1} ÷ {f2}"
-    return txt, str(res)
+OP_BUTTONS = {
+    "fa": ["جمع", "تفریق", "ضرب", "تقسیم"],
+    "en": ["Add", "Subtract", "Multiply", "Divide"],
+}
 
-def norm(a):
-    a = a.strip().replace(" ","+")
-    try: return str(sympy.Rational(a))
-    except: return a.strip()
-
-# --- Command Handlers ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = []
-    codes = list(LANGS.keys())
-    for i in range(0, len(codes), 3):
-        row = [InlineKeyboardButton(LANGS[codes[j]], callback_data=f"lang_{codes[j]}") for j in range(i, min(i+3, len(codes)))]
-        keyboard.append(row)
-    await update.message.reply_text("🌍 Choose your language:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    uid = q.from_user.id
-    data = get(uid)
-
-    if q.data.startswith("lang_"):
-        data["lang"] = q.data[5:]
-        save(uid, data)
-        lang = data["lang"]
-        kb = [
-            [InlineKeyboardButton(OPS[lang][0], callback_data="+"), InlineKeyboardButton(OPS[lang][1], callback_data="-")],
-            [InlineKeyboardButton(OPS[lang][2], callback_data="*"), InlineKeyboardButton(OPS[lang][3], callback_data="/")]
-        ]
-        await q.edit_message_text(TEXT["op"].get(lang, TEXT["op"]["en"]), reply_markup=InlineKeyboardMarkup(kb))
-        return
-
-    # سوال جدید
-    prob_txt, answer = problem(q.data)
-    data.update({"exp":answer, "prob":prob_txt, "t":data.get("t",0)+1})
-    save(uid, data)
-    left = max(0, 30 - data["t"])
-    msg = f"{prob_txt} = ?\n\n{left} {TEXT['left'].get(data['lang'], TEXT['left']['en'])}\n\nWrite answer (e.g. 5/6, 1 1/2, 2.5)"
-    await q.edit_message_text(msg)
-
-# --- Message Handler ---
-async def msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    ans = update.message.text
-    data = get(uid)
-    lang = data.get("lang","en")
-    exp = data.get("exp")
-
-    if not exp:
-        await update.message.reply_text(TEXT["op"].get(lang, TEXT["op"]["en"]) + " " + (TEXT["op"].get(lang, TEXT["op"]["en"]) if lang!="fa" else "را انتخاب کنید!") )
-        return
-
-    # --- منطق بازخورد و توضیح Gemini ---
-    if norm(ans) == exp:
-        fb = TEXT["correct"][lang]
-    else:
-        explanation = "No explanation"
-        if model:
-            try:
-                logging.info(f"Requesting brief explanation for: {data['prob']}")
-                
-                # --- بهینه‌سازی سرعت: محدود کردن تعداد توکن‌ها ---
-                explanation = model.generate_content(
-                    f"Provide a very brief, single-paragraph explanation in {lang} for the math problem: {data['prob']}\nCorrect Answer: {exp}",
-                    config={"max_output_tokens": 100} 
-                ).text
-                
-            except Exception as e:
-                # --- اضافه کردن پیام خطای فنی به کاربر و لاگ‌ها ---
-                error_msg = f"Gemini API FAILED. Error: {e.__class__.__name__}. Check Render logs."
-                logging.error(f"Gemini API call failed for user {uid}: {error_msg}")
-                explanation = f"**{error_msg}**" # نمایش برجسته پیام خطا
-                
-        # ساختار پیام خطا و توضیح
-        fb = f"{TEXT['wrong'][lang]} **{exp}**\n\n{TEXT['explain'][lang]}\n{explanation}"
-
-    data["c"] += 1 if norm(ans) == exp else 0
-    data["exp"] = None
-    save(uid, data)
-
-    # نمایش دکمه‌های عملیات برای سوال بعدی
-    kb = [
-        [InlineKeyboardButton(OPS[lang][0], callback_data="+"), InlineKeyboardButton(OPS[lang][1], callback_data="-")],
-        [InlineKeyboardButton(OPS[lang][2], callback_data="*"), InlineKeyboardButton(OPS[lang][3], callback_data="/")]
+# ================== کیبورد ==================
+def op_keyboard(lang="en"):
+    labels = OP_BUTTONS.get(lang, OP_BUTTONS["en"])
+    keyboard = [
+        [InlineKeyboardButton(f"➕ {labels[0]}", callback_data='+'),
+         InlineKeyboardButton(f"➖ {labels[1]}", callback_data='-')],
+        [InlineKeyboardButton(f"✖️ {labels[2]}", callback_data='*'),
+         InlineKeyboardButton(f"➗ {labels[3]}", callback_data='/')],
     ]
-    
-    # --- جداسازی پیام‌ها: پیام خطا و توضیح در پیام اول ---
-    await update.message.reply_text(fb, parse_mode="Markdown")
-    
-    # --- جداسازی پیام‌ها: منوی عملیات در پیام دوم ---
-    await update.message.reply_text("Choose next operation:", reply_markup=InlineKeyboardMarkup(kb))
+    return InlineKeyboardMarkup(keyboard)
 
-# --- اجرای بات ---
-if TOKEN is None:
-    logging.error("BOT_TOKEN environment variable is not set!")
-else:
-    app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(cb))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, msg))
-    logging.info("Starting polling...")
-    app.run_polling(poll_interval=1.0)
+# ================== کمکی ==================
+def t(lang, key, **kwargs):
+    return TEXT[key].get(lang, TEXT[key]["en"]).format(**kwargs)
+
+def get_user(user_id):
+    if REDIS_CLIENT.exists(f"user:{user_id}"):
+        return json.loads(REDIS_CLIENT.get(f"user:{user_id}"))
+    return {"lang":"fa","trial":FREE_TRIAL,"is_vip":False,"total":0,"correct":0,"topic":"+","expected_answer":None,"f1_tuple":(0,1),"f2_tuple":(0,1)}
+
+def save_user(user_id, data):
+    REDIS_CLIENT.set(f"user:{user_id}", json.dumps(data))
+
+# ================== تولید سوال ==================
+def generate_problem(op, vip=False):
+    max_num = 30 if vip else 15
+    max_den = 20 if vip else 12
+    n1, n2 = random.randint(1,max_num), random.randint(1,max_num)
+    d1, d2 = random.randint(2,max_den), random.randint(2,max_den)
+    f1, f2 = sympy.Rational(n1,d1), sympy.Rational(n2,d2)
+    if op == '+':
+        res = f1+f2
+        text = f"{f1} + {f2}"
+    elif op=='-':
+        if f1<f2: f1,f2=f2,f1
+        res = f1-f2
+        text = f"{f1} - {f2}"
+    elif op=='*':
+        res=f1*f2
+        text=f"{f1} × {f2}"
+    else:
+        if f2==0: f2=sympy.Rational(1,2)
+        res=f1/f2
+        text=f"{f1} ÷ {f2}"
+    return text,str(res),(n1,d1),(n2,d2)
+
+def normalize(ans):
+    ans = ans.strip().replace(" ","+")
+    try: return str(sympy.Rational(ans))
+    except: return ans.strip()
+
+# ================== توضیح گام‌به‌گام ==================
+def explain(f1_tuple, f2_tuple, op, answer):
+    f1 = sympy.Rational(f1_tuple[0], f1_tuple[1])
+    f2 = sympy.Rational(f2_tuple[0], f2_tuple[1])
+    explanation = f"سوال: {f1} {op} {f2}\n\n"
+
+    if op in ['+','-']:
+        # جمع و تفریق با مخرج مشترک
+        lcm = sympy.lcm(f1.q,f2.q)
+        explanation += f"مرحله 1: یافتن مخرج مشترک بین {f1.q} و {f2.q} → {lcm}\n"
+        explanation += f"توضیح: کوچک‌ترین عددی که هر دو مخرج در آن بخش‌پذیر باشند.\n"
+        f1_new = f1*(lcm//f1.q)
+        f2_new = f2*(lcm//f2.q)
+        explanation += f"مرحله 2: تبدیل کسرها به مخرج مشترک:\n"
+        explanation += f"  {f1} → {f1_new}\n"
+        explanation += f"  {f2} → {f2_new}\n"
+        res = f1_new+f2_new if op=='+' else f1_new-f2_new
+        explanation += f"مرحله 3: {f1_new} {op} {f2_new} = {res}\n"
+        if res>1:
+            whole = res.p//res.q
+            remainder = res-whole
+            if remainder>0:
+                explanation += f"مرحله 4: عدد مخلوط → {whole} و {remainder}\n"
+            else:
+                explanation += f"مرحله 4: پاسخ نهایی = {whole}\n"
+        else:
+            explanation += f"مرحله 4: پاسخ نهایی = {res}\n"
+
+    elif op=='*':
+        res = f1*f2
+        explanation += f"مرحله 1: ضرب کسرها: {f1} × {f2} = {res}\n"
+        if res>1:
+            whole = res.p//res.q
+            remainder = res-whole
+            if remainder>0:
+                explanation += f"مرحله 2: عدد مخلوط → {whole} و {remainder}\n"
+            else:
+                explanation += f"مرحله 2: پاسخ نهایی = {whole}\n"
+        else:
+            explanation += f"مرحله 2: پاسخ نهایی = {res}\n"
+
+    else:  # تقسیم
+        explanation += f"مرحله 1: تبدیل تقسیم به ضرب معکوس:\n"
+        explanation += f"  {f1} ÷ {f2} = {f1} × {f2.q}/{f2.p} = {f1} × {sympy.Rational(f2.q,f2.p)}\n"
+        res = f1 * sympy.Rational(f2.q,f2.p)
+        explanation += f"مرحله 2: انجام ضرب: {f1} × {sympy.Rational(f2.q,f2.p)} = {res}\n"
+        if res>1:
+            whole = res.p//res.q
+            remainder = res-whole
+            if remainder>0:
+                explanation += f"مرحله 3: عدد مخلوط → {whole} و {remainder}\n"
+            else:
+                explanation += f"مرحله 3: پاسخ نهایی = {whole}\n"
+        else:
+            explanation += f"مرحله 3: پاسخ نهایی = {res}\n"
+
+    return explanation
+
+# ================== هندلرها ==================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user = get_user(user_id)
+    save_user(user_id,user)
+    await update.message.reply_text("انتخاب زبان / Choose language:",reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("FA",callback_data="lang_fa"),InlineKeyboardButton("EN",callback_data="lang_en")]
+    ]))
+
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    user = get_user(user_id)
+    
+    if query.data.startswith("lang_"):
+        user['lang']=query.data.split("_")[1]
+        save_user(user_id,user)
+        await query.edit_message_text(t(user['lang'],"welcome")+"\n\n"+t(user['lang'],"choose_op"),reply_markup=op_keyboard(user['lang']))
+        return
+    
+    op=query.data
+    if not user['is_vip'] and user['trial']<=0:
+        await query.edit_message_text(t(user['lang'],'trial_over')+"\n\n"+t(user['lang'],'send_proof'))
+        return
+    
+    problem,answer,f1_tuple,f2_tuple=generate_problem(op,vip=user['is_vip'])
+    user.update({"expected_answer":answer,"topic":op,"problem_text":problem,"f1_tuple":f1_tuple,"f2_tuple":f2_tuple})
+    if not user['is_vip']:
+        user['trial']-=1
+    save_user(user_id,user)
+    await query.edit_message_text(f"{problem} = ?\n\n{t(user['lang'],'trial_left')}: {user['trial']}\n\nجواب خود را وارد کنید:")
+
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+    user = get_user(user_id)
+    if not user.get("expected_answer"):
+        await update.message.reply_text("لطفاً ابتدا /start را بزنید")
+        return
+    user['total']+=1
+    if normalize(text)==user['expected_answer']:
+        user['correct']+=1
+        feedback = t(user['lang'],'correct')
+    else:
+        feedback = f"{t(user['lang'],'wrong')} {user['expected_answer']}\n\n{explain(user['f1_tuple'],user['f2_tuple'],user['topic'],user['expected_answer'])}"
+    save_user(user_id,user)
+    await update.message.reply_text(feedback+"\n\n"+t(user['lang'],'next_question'),reply_markup=op_keyboard(user['lang']))
+
+# ================== اجرا ==================
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start",start))
+    app.add_handler(CallbackQueryHandler(callback_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,message_handler))
+    logging.info("Fraction Bot started!")
+    app.run_polling()
+
+if __name__=="__main__":
+    main()
