@@ -1,3 +1,4 @@
-python-telegram-bot==20.3
-sympy==1.12
-redis==5.3.0
+python-telegram-bot
+sympy
+redis
+
