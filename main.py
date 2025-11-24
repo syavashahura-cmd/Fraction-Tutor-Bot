@@ -2,9 +2,10 @@ import telebot
 import ccxt
 import time
 import threading
+import os  # اضافه شده برای خواندن متغیرهای محیطی
 
-# توکن ربات تلگرام رو اینجا بگذار
-BOT_TOKEN = 'YOUR_BOT_TOKEN'
+# توکن رو از متغیر محیطی بخون (در Render تعریف کن)
+BOT_TOKEN = os.getenv('BOT_TOKEN')
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # صرافی (بایننس) و سیمبل‌ها
