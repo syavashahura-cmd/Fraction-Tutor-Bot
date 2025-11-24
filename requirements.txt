@@ -1,4 +1,1 @@
-python-telegram-bot
-sympy
-redis
-
+pip freeze > requirements.txt
